@@ -1,0 +1,256 @@
+import streamlit as st
+import whisper
+import librosa
+import numpy as np
+import tempfile
+import os
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+import matplotlib.pyplot as plt
+
+# Настройки страницы
+st.set_page_config(page_title="ПЕСНИ ПАВЛОВЫХ - Аккорды и Текст", layout="wide")
+
+# Стили
+st.markdown("""
+<style>
+    .main {
+        background-color: #f5f5f5;
+    }
+    .stButton>button {
+        background-color: #4CAF50;
+        color: white;
+        font-size: 18px;
+        padding: 10px 24px;
+    }
+    .footer {
+        position: fixed;
+        bottom: 0;
+        width: 100%;
+        background-color: #f1f1f1;
+        text-align: center;
+        padding: 10px;
+        font-weight: bold;
+        color: #333;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🎵 Генератор аккордов и текста")
+st.markdown("### Загрузи песню — получи текст с аккордами в PDF")
+
+# Боковая панель
+st.sidebar.header("Настройки")
+model_size = st.sidebar.selectbox("Модель распознавания", ["base", "small", "medium"])
+confidence_threshold = st.sidebar.slider("Порог уверенности аккордов", 0.3, 0.9, 0.5)
+
+# Загрузка файла
+uploaded_file = st.file_uploader("📁 Выбери аудиофайл (MP3, WAV, M4A)", type=['mp3', 'wav', 'm4a', 'ogg'])
+
+if uploaded_file is not None:
+    st.audio(uploaded_file)
+    
+    if st.button(" Обработать песню"):
+        with st.spinner('⏳ Обрабатываю... Это займёт 2-5 минут...'):
+            try:
+                # Сохраняем файл
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+                    tmp_file.write(uploaded_file.read())
+                    audio_path = tmp_file.name
+                
+                # 1. Распознавание текста
+                progress_bar = st.progress(0)
+                st.info("🎤 Распознаю текст песни...")
+                model = whisper.load_model(model_size)
+                result = model.transcribe(audio_path, language="ru", word_timestamps=True)
+                progress_bar.progress(33)
+                
+                words_data = []
+                for segment in result["segments"]:
+                    for word in segment.get("words", []):
+                        words_data.append({
+                            "word": word["word"].strip(),
+                            "start": word["start"],
+                            "end": word["end"]
+                        })
+                
+                # 2. Анализ аккордов
+                st.info("🎼 Анализирую аккорды...")
+                y, sr = librosa.load(audio_path, sr=22050)
+                chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+                progress_bar.progress(66)
+                
+                # Шаблоны аккордов
+                chord_templates = {
+                    'C': [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0],
+                    'Cm': [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0],
+                    'G': [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0],
+                    'Gm': [0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0],
+                    'Am': [1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0],
+                    'F': [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0],
+                    'Dm': [0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0],
+                    'E': [0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
+                    'Em': [0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0],
+                    'A': [0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
+                    'D': [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0],
+                    'Bm': [0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0],
+                }
+                
+                chords_data = []
+                hop_length = 512
+                time_per_frame = hop_length / sr
+                prev_chord = "N.C."
+                
+                for i in range(chroma.shape[1]):
+                    frame_chroma = chroma[:, i]
+                    frame_chroma = frame_chroma / (np.linalg.norm(frame_chroma) + 1e-10)
+                    
+                    best_chord = "N.C."
+                    max_corr = confidence_threshold
+                    
+                    for chord_name, template in chord_templates.items():
+                        template = np.array(template) / (np.linalg.norm(template) + 1e-10)
+                        for shift in range(12):
+                            shifted_template = np.roll(template, shift)
+                            corr = np.dot(frame_chroma, shifted_template)
+                            if corr > max_corr:
+                                max_corr = corr
+                                notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+                                root = notes[shift % 12]
+                                suffix = chord_name[1:] if len(chord_name) > 1 else ''
+                                best_chord = root + suffix
+                    
+                    time_sec = i * time_per_frame
+                    if best_chord != prev_chord:
+                        chords_data.append({"chord": best_chord, "time": time_sec})
+                        prev_chord = best_chord
+                
+                progress_bar.progress(90)
+                
+                # 3. Синхронизация аккордов и слов
+                st.info("📝 Синхронизирую аккорды с текстом...")
+                aligned_words = []
+                current_chord_idx = 0
+                
+                for w in words_data:
+                    while current_chord_idx < len(chords_data) - 1 and chords_data[current_chord_idx + 1]["time"] <= w["start"]:
+                        current_chord_idx += 1
+                    
+                    chord = chords_data[current_chord_idx]["chord"] if chords_data else "N.C."
+                    display_chord = chord if (current_chord_idx == 0 or (current_chord_idx > 0 and chords_data[current_chord_idx]["time"] >= w["start"] - 0.2)) else ""
+                    if w == words_data[0]:
+                        display_chord = chord
+                    
+                    aligned_words.append({"word": w["word"], "chord": display_chord, "time": w["start"]})
+                
+                # 4. Разделение на блоки (куplet/припев/бридж)
+                total_words = len(aligned_words)
+                part_size = total_words // 3
+                blocks = [
+                    {"type": "verse", "title": "КУПЛЕТ", "words": aligned_words[:part_size], "color": "#E3F2FD"},
+                    {"type": "chorus", "title": "ПРИПЕВ", "words": aligned_words[part_size:part_size*2], "color": "#FFF9C4"},
+                    {"type": "bridge", "title": "БРИДЖ", "words": aligned_words[part_size*2:], "color": "#E8F5E9"}
+                ]
+                
+                progress_bar.progress(100)
+                st.success("✅ Готово!")
+                
+                # 5. Генерация PDF
+                st.markdown("### 📄 Предпросмотр:")
+                
+                # Создаем PDF
+                buffer = BytesIO()
+                c = canvas.Canvas(buffer, pagesize=A4)
+                width, height = A4
+                y_position = height - 2*cm
+                
+                # Заголовок
+                c.setFont("Helvetica-Bold", 16)
+                c.drawCentredString(width/2, y_position, "ТЕКСТ И АККОРДЫ")
+                y_position -= 1*cm
+                
+                # Блоки
+                for block in blocks:
+                    # Фон блока
+                    c.setFillColor(colors.HexColor(block["color"]))
+                    c.rect(1*cm, y_position-5, width-2*cm, 40, fill=1, stroke=0)
+                    c.setFillColor(colors.black)
+                    
+                    # Название блока
+                    c.setFont("Helvetica-Bold", 12)
+                    c.drawString(1.5*cm, y_position+25, block["title"])
+                    y_position -= 10
+                    
+                    # Слова с аккордами
+                    c.setFont("Helvetica", 10)
+                    current_line = ""
+                    current_chord = ""
+                    x_pos = 1.5*cm
+                    
+                    for item in block["words"]:
+                        if item["chord"]:
+                            # Рисуем аккорд красным
+                            c.setFillColor(colors.red)
+                            c.setFont("Helvetica-Bold", 11)
+                            c.drawString(x_pos, y_position+15, item["chord"])
+                            c.setFillColor(colors.black)
+                            c.setFont("Helvetica", 10)
+                        
+                        word_text = item["word"] + " "
+                        c.drawString(x_pos, y_position, word_text)
+                        x_pos += len(word_text) * 3.5
+                        
+                        if x_pos > width - 2*cm:
+                            y_position -= 15
+                            x_pos = 1.5*cm
+                            if y_position < 2*cm:
+                                c.showPage()
+                                y_position = height - 2*cm
+                    
+                    y_position -= 30
+                    if y_position < 3*cm:
+                        c.showPage()
+                        y_position = height - 2*cm
+                
+                # Подпись
+                c.setFont("Helvetica-Bold", 10)
+                c.setFillColor(colors.grey)
+                c.drawCentredString(width/2, 1*cm, "ПЕСНИ ПАВЛОВЫХ©")
+                
+                c.save()
+                buffer.seek(0)
+                
+                # Показываем текст на экране
+                for block in blocks:
+                    with st.expander(f"{block['title']}", expanded=True):
+                        text_with_chords = ""
+                        for item in block["words"]:
+                            if item["chord"]:
+                                text_with_chords += f"**{item['chord']}** "
+                            text_with_chords += item["word"] + " "
+                        st.markdown(text_with_chords)
+                
+                # Кнопка скачивания
+                st.download_button(
+                    label="📥 СКАЧАТЬ PDF",
+                    data=buffer,
+                    file_name="song_chords_pavlovy.pdf",
+                    mime="application/pdf"
+                )
+                
+                # Очистка
+                os.unlink(audio_path)
+                
+            except Exception as e:
+                st.error(f"❌ Ошибка: {str(e)}")
+                st.error("Попробуй другой файл или уменьши размер модели")
+
+# Футер
+st.markdown("""
+<div class="footer">
+    ПЕСНИ ПАВЛОВЫХ© 2026
+</div>
+""", unsafe_allow_html=True)

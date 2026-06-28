@@ -1,0 +1,6 @@
+streamlit
+openai-whisper
+librosa
+numpy
+reportlab
+matplotlib
