@@ -5,50 +5,35 @@ import numpy as np
 import tempfile
 import os
 from io import BytesIO
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib import colors
-from reportlab.lib.units import cm
-import matplotlib.pyplot as plt
+from fpdf import FPDF
+import requests
 
-# Настройки страницы
+# Скачиваем шрифт с поддержкой кириллицы
+FONT_URL = "https://github.com/google/fonts/raw/main/ofl/dejavusans/DejaVuSans.ttf"
+FONT_BOLD_URL = "https://github.com/google/fonts/raw/main/ofl/dejavusans/DejaVuSans-Bold.ttf"
+
+def download_fonts():
+    if not os.path.exists("DejaVuSans.ttf"):
+        r = requests.get(FONT_URL)
+        with open("DejaVuSans.ttf", "wb") as f:
+            f.write(r.content)
+    if not os.path.exists("DejaVuSans-Bold.ttf"):
+        r = requests.get(FONT_BOLD_URL)
+        with open("DejaVuSans-Bold.ttf", "wb") as f:
+            f.write(r.content)
+
+download_fonts()
+
 st.set_page_config(page_title="ПЕСНИ ПАВЛОВЫХ - Аккорды и Текст", layout="wide")
-
-# Стили
-st.markdown("""
-<style>
-    .main {
-        background-color: #f5f5f5;
-    }
-    .stButton>button {
-        background-color: #4CAF50;
-        color: white;
-        font-size: 18px;
-        padding: 10px 24px;
-    }
-    .footer {
-        position: fixed;
-        bottom: 0;
-        width: 100%;
-        background-color: #f1f1f1;
-        text-align: center;
-        padding: 10px;
-        font-weight: bold;
-        color: #333;
-    }
-</style>
-""", unsafe_allow_html=True)
 
 st.title("🎵 Генератор аккордов и текста")
 st.markdown("### Загрузи песню — получи текст с аккордами в PDF")
 
-# Боковая панель
 st.sidebar.header("Настройки")
-model_size = st.sidebar.selectbox("Модель распознавания", ["base", "small", "medium"])
+model_size = st.sidebar.selectbox("Модель распознавания", ["base", "small"])
 confidence_threshold = st.sidebar.slider("Порог уверенности аккордов", 0.3, 0.9, 0.5)
 
-# Загрузка файла
-uploaded_file = st.file_uploader("📁 Выбери аудиофайл (MP3, WAV, M4A)", type=['mp3', 'wav', 'm4a', 'ogg'])
+uploaded_file = st.file_uploader(" Выбери аудиофайл (MP3, WAV, M4A)", type=['mp3', 'wav', 'm4a', 'ogg'])
 
 if uploaded_file is not None:
     st.audio(uploaded_file)
@@ -56,12 +41,10 @@ if uploaded_file is not None:
     if st.button(" Обработать песню"):
         with st.spinner('⏳ Обрабатываю... Это займёт 2-5 минут...'):
             try:
-                # Сохраняем файл
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
                     tmp_file.write(uploaded_file.read())
                     audio_path = tmp_file.name
                 
-                # 1. Распознавание текста
                 progress_bar = st.progress(0)
                 st.info("🎤 Распознаю текст песни...")
                 model = whisper.load_model(model_size)
@@ -77,13 +60,11 @@ if uploaded_file is not None:
                             "end": word["end"]
                         })
                 
-                # 2. Анализ аккордов
                 st.info("🎼 Анализирую аккорды...")
                 y, sr = librosa.load(audio_path, sr=22050)
                 chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
                 progress_bar.progress(66)
                 
-                # Шаблоны аккордов
                 chord_templates = {
                     'C': [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0],
                     'Cm': [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0],
@@ -97,6 +78,9 @@ if uploaded_file is not None:
                     'A': [0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
                     'D': [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0],
                     'Bm': [0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0],
+                    'Bb': [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0],
+                    'F#': [0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
+                    'C#': [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0],
                 }
                 
                 chords_data = []
@@ -130,7 +114,6 @@ if uploaded_file is not None:
                 
                 progress_bar.progress(90)
                 
-                # 3. Синхронизация аккордов и слов
                 st.info("📝 Синхронизирую аккорды с текстом...")
                 aligned_words = []
                 current_chord_idx = 0
@@ -146,111 +129,120 @@ if uploaded_file is not None:
                     
                     aligned_words.append({"word": w["word"], "chord": display_chord, "time": w["start"]})
                 
-                # 4. Разделение на блоки (куplet/припев/бридж)
                 total_words = len(aligned_words)
                 part_size = total_words // 3
                 blocks = [
-                    {"type": "verse", "title": "КУПЛЕТ", "words": aligned_words[:part_size], "color": "#E3F2FD"},
-                    {"type": "chorus", "title": "ПРИПЕВ", "words": aligned_words[part_size:part_size*2], "color": "#FFF9C4"},
-                    {"type": "bridge", "title": "БРИДЖ", "words": aligned_words[part_size*2:], "color": "#E8F5E9"}
+                    {"type": "verse", "title": "Куплет 1", "words": aligned_words[:part_size]},
+                    {"type": "chorus", "title": "Припев", "words": aligned_words[part_size:part_size*2]},
+                    {"type": "bridge", "title": "Бридж", "words": aligned_words[part_size*2:]}
                 ]
                 
                 progress_bar.progress(100)
                 st.success("✅ Готово!")
                 
-                # 5. Генерация PDF
-                st.markdown("### 📄 Предпросмотр:")
+                # Генерация PDF в формате как в референсах
+                class PDF(FPDF):
+                    def footer(self):
+                        self.set_y(-15)
+                        self.set_font('DejaVu', 'B', 9)
+                        self.set_text_color(100, 100, 100)
+                        self.cell(0, 10, 'ПЕСНИ ПАВЛОВЫХ\u00A9', align='C')
                 
-                # Создаем PDF
-                buffer = BytesIO()
-                c = canvas.Canvas(buffer, pagesize=A4)
-                width, height = A4
-                y_position = height - 2*cm
+                pdf = PDF()
+                pdf.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)
+                pdf.add_font('DejaVu', 'B', 'DejaVuSans-Bold.ttf', uni=True)
+                pdf.set_auto_page_break(auto=True, margin=20)
+                pdf.add_page()
                 
-                # Заголовок
-                c.setFont("Helvetica-Bold", 16)
-                c.drawCentredString(width/2, y_position, "ТЕКСТ И АККОРДЫ")
-                y_position -= 1*cm
+                # Заголовок песни (если нужно)
+                # pdf.set_font('DejaVu', 'B', 16)
+                # pdf.cell(0, 15, 'Название песни', align='C', ln=True)
+                # pdf.ln(5)
                 
-                # Блоки
                 for block in blocks:
-                    # Фон блока
-                    c.setFillColor(colors.HexColor(block["color"]))
-                    c.rect(1*cm, y_position-5, width-2*cm, 40, fill=1, stroke=0)
-                    c.setFillColor(colors.black)
+                    # Заголовок блока жирным
+                    pdf.set_font('DejaVu', 'B', 12)
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.cell(0, 10, block["title"], ln=True)
+                    pdf.ln(3)
                     
-                    # Название блока
-                    c.setFont("Helvetica-Bold", 12)
-                    c.drawString(1.5*cm, y_position+25, block["title"])
-                    y_position -= 10
-                    
-                    # Слова с аккордами
-                    c.setFont("Helvetica", 10)
-                    current_line = ""
-                    current_chord = ""
-                    x_pos = 1.5*cm
+                    # Формируем строки с аккордами и текстом
+                    # Собираем все слова и аккорды в линии
+                    lines = []
+                    current_line_words = []
+                    current_line_chords = []
+                    max_words_per_line = 8  # Примерно 8 слов в строке
                     
                     for item in block["words"]:
-                        if item["chord"]:
-                            # Рисуем аккорд красным
-                            c.setFillColor(colors.red)
-                            c.setFont("Helvetica-Bold", 11)
-                            c.drawString(x_pos, y_position+15, item["chord"])
-                            c.setFillColor(colors.black)
-                            c.setFont("Helvetica", 10)
+                        current_line_words.append(item["word"])
+                        if item["chord"] and item["chord"] != "N.C.":
+                            current_line_chords.append((len(current_line_words) - 1, item["chord"]))
                         
-                        word_text = item["word"] + " "
-                        c.drawString(x_pos, y_position, word_text)
-                        x_pos += len(word_text) * 3.5
-                        
-                        if x_pos > width - 2*cm:
-                            y_position -= 15
-                            x_pos = 1.5*cm
-                            if y_position < 2*cm:
-                                c.showPage()
-                                y_position = height - 2*cm
+                        if len(current_line_words) >= max_words_per_line:
+                            lines.append({
+                                "words": current_line_words,
+                                "chords": current_line_chords
+                            })
+                            current_line_words = []
+                            current_line_chords = []
                     
-                    y_position -= 30
-                    if y_position < 3*cm:
-                        c.showPage()
-                        y_position = height - 2*cm
+                    # Последняя строка
+                    if current_line_words:
+                        lines.append({
+                            "words": current_line_words,
+                            "chords": current_line_chords
+                        })
+                    
+                    # Рисуем каждую строку
+                    for line in lines:
+                        # Сначала рисуем аккорды над словами
+                        if line["chords"]:
+                            pdf.set_font('DejaVu', '', 10)
+                            pdf.set_text_color(0, 0, 139)  # Тёмно-синий для аккордов
+                            
+                            chord_text = ""
+                            last_pos = -1
+                            for word_idx, chord in line["chords"]:
+                                # Добавляем пробелы до позиции аккорда
+                                while last_pos + 1 < word_idx:
+                                    chord_text += "    "
+                                    last_pos += 1
+                                chord_text += chord + "  "
+                                last_pos = word_idx
+                            
+                            pdf.cell(0, 6, chord_text, ln=True)
+                        
+                        # Теперь рисуем текст
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.set_font('DejaVu', '', 11)
+                        line_text = " ".join(line["words"])
+                        pdf.cell(0, 7, line_text, ln=True)
+                        pdf.ln(2)
+                    
+                    pdf.ln(5)
                 
-                # Подпись
-                c.setFont("Helvetica-Bold", 10)
-                c.setFillColor(colors.grey)
-                c.drawCentredString(width/2, 1*cm, "ПЕСНИ ПАВЛОВЫХ©")
+                pdf_output = pdf.output(dest='S').encode('latin-1')
                 
-                c.save()
-                buffer.seek(0)
-                
-                # Показываем текст на экране
+                st.markdown("### 📄 Предпросмотр:")
                 for block in blocks:
                     with st.expander(f"{block['title']}", expanded=True):
                         text_with_chords = ""
                         for item in block["words"]:
-                            if item["chord"]:
+                            if item["chord"] and item["chord"] != "N.C.":
                                 text_with_chords += f"**{item['chord']}** "
                             text_with_chords += item["word"] + " "
                         st.markdown(text_with_chords)
                 
-                # Кнопка скачивания
                 st.download_button(
                     label="📥 СКАЧАТЬ PDF",
-                    data=buffer,
+                    data=pdf_output,
                     file_name="song_chords_pavlovy.pdf",
                     mime="application/pdf"
                 )
                 
-                # Очистка
                 os.unlink(audio_path)
                 
             except Exception as e:
                 st.error(f"❌ Ошибка: {str(e)}")
-                st.error("Попробуй другой файл или уменьши размер модели")
-
-# Футер
-st.markdown("""
-<div class="footer">
-    ПЕСНИ ПАВЛОВЫХ© 2026
-</div>
-""", unsafe_allow_html=True)
+                import traceback
+                st.error(traceback.format_exc())
