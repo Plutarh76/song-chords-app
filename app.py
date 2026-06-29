@@ -4,30 +4,29 @@ import librosa
 import numpy as np
 import tempfile
 import os
-from io import BytesIO
 from fpdf import FPDF
 import requests
+import warnings
+warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="ПЕСНИ ПАВЛОВЫХ", layout="wide")
 
 st.title("🎵 Генератор аккордов и текста")
 st.markdown("Загрузи песню — получи текст с аккордами в PDF")
 
-# Скачивание шрифтов при запуске
+# Скачиваем шрифт ПЕРЕД всем остальным
 @st.cache_resource
-def get_fonts():
-    if not os.path.exists("DejaVuSans.ttf"):
-        try:
-            r = requests.get("https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf", timeout=10)
-            with open("DejaVuSans.ttf", "wb") as f:
-                f.write(r.content)
-        except:
-            # Если не получилось, создаём пустой файл
-            with open("DejaVuSans.ttf", "wb") as f:
-                f.write(b"")
-    return "DejaVuSans.ttf"
+def download_font():
+    font_url = "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf"
+    try:
+        response = requests.get(font_url, timeout=30)
+        with open("Roboto-Regular.ttf", "wb") as f:
+            f.write(response.content)
+        return "Roboto-Regular.ttf"
+    except:
+        return None
 
-font_path = get_fonts()
+font_file = download_font()
 
 uploaded_file = st.file_uploader("Выбери аудиофайл (MP3 до 10MB)", type=['mp3'])
 
@@ -52,7 +51,7 @@ if uploaded_file is not None:
                         })
                 
                 st.info("🎼 Анализирую аккорды...")
-                y, sr = librosa.load(audio_path, sr=22050, duration=180)  # Ограничиваем 3 минуты
+                y, sr = librosa.load(audio_path, sr=22050, duration=180)
                 chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
                 
                 chord_templates = {
@@ -66,6 +65,8 @@ if uploaded_file is not None:
                     'A': [0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
                     'D': [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0],
                     'Bm': [0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0],
+                    'Cm': [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0],
+                    'Gm': [0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0],
                 }
                 
                 chords_data = []
@@ -89,7 +90,8 @@ if uploaded_file is not None:
                                 max_corr = corr
                                 notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
                                 root = notes[shift % 12]
-                                best_chord = root + chord_name[1:]
+                                suffix = chord_name[1:] if len(chord_name) > 1 else ''
+                                best_chord = root + suffix
                     
                     time_sec = i * time_per_frame
                     if best_chord != prev_chord:
@@ -124,20 +126,21 @@ if uploaded_file is not None:
                 pdf.add_page()
                 pdf.set_auto_page_break(auto=True, margin=20)
                 
-                # Пытаемся добавить шрифт
-                try:
-                    pdf.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)
-                    pdf.set_font('DejaVu', '', 11)
-                except:
-                    # Если шрифт не загрузился, используем стандартный (кириллица не будет работать)
-                    pdf.set_font('Arial', '', 11)
-                    st.warning("⚠️ Шрифт не загрузился. Кириллица может отображаться некорректно.")
+                # Добавляем шрифт
+                if font_file and os.path.exists(font_file):
+                    pdf.add_font('Roboto', '', font_file, uni=True)
+                    pdf.add_font('Roboto', 'B', font_file, uni=True)
+                    main_font = 'Roboto'
+                else:
+                    # Fallback на стандартный шрифт (кириллица не будет работать)
+                    main_font = 'Arial'
+                    st.warning("⚠️ Шрифт не загрузился")
                 
                 for block in blocks:
-                    # Заголовок блока
-                    pdf.set_font('DejaVu', 'B', 12)
+                    # Заголовок блока жирным
+                    pdf.set_font(main_font, 'B', 12)
                     pdf.cell(0, 10, block["title"], ln=True)
-                    pdf.ln(3)
+                    pdf.ln(2)
                     
                     # Формируем строки
                     lines = []
@@ -159,32 +162,36 @@ if uploaded_file is not None:
                     
                     # Рисуем строки
                     for line in lines:
+                        # Сначала аккорды
                         if line["chords"]:
-                            pdf.set_font('DejaVu', '', 9)
-                            pdf.set_text_color(0, 0, 128)
-                            chord_str = ""
+                            pdf.set_font(main_font, '', 9)
+                            pdf.set_text_color(0, 0, 139)  # Тёмно-синий
+                            chord_text = ""
                             last_pos = -1
-                            for idx, chord in line["chords"]:
-                                while last_pos + 1 < idx:
-                                    chord_str += "    "
+                            for word_idx, chord in line["chords"]:
+                                # Добавляем пробелы до позиции слова
+                                while last_pos + 1 < word_idx:
+                                    chord_text += "     "
                                     last_pos += 1
-                                chord_str += chord + "  "
-                                last_pos = idx
-                            pdf.cell(0, 5, chord_str, ln=True)
+                                chord_text += chord + "   "
+                                last_pos = word_idx
+                            pdf.cell(0, 5, chord_text, ln=True)
                         
+                        # Теперь текст
                         pdf.set_text_color(0, 0, 0)
-                        pdf.set_font('DejaVu', '', 10)
+                        pdf.set_font(main_font, '', 10)
                         pdf.cell(0, 6, " ".join(line["words"]), ln=True)
                         pdf.ln(1)
                     
-                    pdf.ln(5)
+                    pdf.ln(4)
                 
-                # Подпись
+                # Подпись внизу
                 pdf.set_y(-15)
-                pdf.set_font('DejaVu', 'B', 9)
+                pdf.set_font(main_font, 'B', 9)
                 pdf.set_text_color(100, 100, 100)
                 pdf.cell(0, 10, 'ПЕСНИ ПАВЛОВЫХ©', align='C')
                 
+                # Сохраняем
                 pdf_output = pdf.output(dest='S').encode('latin-1', errors='replace')
                 
                 st.success("✅ Готово!")
