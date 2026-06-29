@@ -2,5 +2,5 @@ streamlit
 openai-whisper
 librosa
 numpy
-fpdf2
+reportlab
 requests
