@@ -3,4 +3,3 @@ openai-whisper
 librosa
 numpy
 reportlab
-requests
