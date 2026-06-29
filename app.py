@@ -1,3 +1,5 @@
+# После строки: from fpdf import FPDF
+# Добавь проверку установки шрифтов
 import streamlit as st
 import whisper
 import librosa
